@@ -1,6 +1,6 @@
 # Video Processing Nodes
 
-ComfyUI custom nodes for video processing, including video chunking and batch video loading.
+ComfyUI custom nodes for video processing, including video chunking, batch loading, and metadata extraction.
 
 ## Nodes
 
@@ -116,7 +116,45 @@ Check if a video has already been chunked to avoid re-processing.
 - Format: `{"video_hash": "/path/to/chunks"}`
 - Automatically updated by Video Chunker
 
-### 4. Int to String
+### 4. Video Info
+
+Get detailed metadata information from a video file.
+
+**Features:**
+- Extracts video metadata without processing
+- Fast analysis (no decoding required)
+- Useful for validation and parameter selection
+- Works with all video formats
+
+**Inputs:**
+- `video`: Video to analyze
+
+**Outputs:**
+- `fps`: Frame rate (float)
+- `width`: Video width in pixels (int)
+- `height`: Video height in pixels (int)
+- `duration`: Duration in seconds (float)
+- `total_frames`: Total number of frames (int)
+- `codec`: Video codec name (string)
+
+**Use Cases:**
+- Validate video before processing
+- Determine optimal `frames_per_chunk` value
+- Check if video meets requirements (resolution, FPS, etc.)
+- Debug video issues
+- Display video information to user
+
+**Example Output:**
+```
+fps: 30.0
+width: 1920
+height: 1080
+duration: 17.47
+total_frames: 524
+codec: h264
+```
+
+### 5. Int to String
 
 Simple utility node that converts an integer to a string.
 
@@ -178,22 +216,35 @@ LoadVideoBatch → CheckVideoProcessed → (conditional) → VideoChunker
 4. If is_processed = false, send to VideoChunker
 5. Saves time by skipping duplicate work
 
-### Example 3: Batch process with custom chunk size
+### Example 3: Validate video before processing
 
 ```
-LoadVideoBatch (path="/videos", pattern="*.mp4", label="MyBatch")
+LoadVideoBatch → VideoInfo → VideoChunker
+```
+
+1. LoadVideoBatch loads next video
+2. VideoInfo extracts metadata (FPS, resolution, frame count)
+3. Use metadata to validate or set parameters
+4. VideoChunker processes with optimal settings
+
+### Example 4: Complete smart workflow
+
+```
+LoadVideoBatch
+  ↓
+VideoInfo (check metadata)
   ↓
 CheckVideoProcessed
   ↓ (if not processed)
-VideoChunker (frames_per_chunk=60)
+VideoChunker (frames_per_chunk based on total_frames)
 ```
 
 This will:
-- Load videos from `/videos` directory (only .mp4 files)
-- Check if each video is already processed
-- Skip already chunked videos
-- Split new videos into 60-frame chunks (preserving original FPS and quality)
-- Automatically move to next video on each run
+- Load videos incrementally
+- Check video metadata first
+- Skip already processed videos
+- Process new videos with smart parameters
+- Track all state persistently
 
 ## Video Chunker Details
 

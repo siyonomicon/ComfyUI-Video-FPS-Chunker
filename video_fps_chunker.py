@@ -190,32 +190,38 @@ class VideoFPSChunker(io.ComfyNode):
 
             print(f"Processing video: {total_frames} frames @ {fps:.2f} FPS -> {num_chunks} chunks of {frames_per_chunk} frames")
 
-            # Extract each chunk with time-based seeking and frame limiting
+            # Extract each chunk - force exact duration in container
             for chunk_idx in range(num_chunks):
                 start_frame = chunk_idx * frames_per_chunk
                 num_frames_in_chunk = min(frames_per_chunk, total_frames - start_frame)
                 start_time = start_frame / fps
+                exact_duration = num_frames_in_chunk / fps
 
                 chunk_output = os.path.join(chunk_base_dir, f"{chunk_idx}.mp4")
 
-                # Use time-based seeking with frame limiting for proper duration metadata
+                # Extract with exact duration forcing
                 cmd_extract = [
                     ffmpeg_path,
-                    "-ss", str(start_time),  # Seek to start time
+                    "-ss", str(start_time),
                     "-i", video_path,
-                    "-frames:v", str(num_frames_in_chunk),  # Extract exact number of frames
+                    "-t", str(exact_duration),  # Force exact duration
+                    "-vframes", str(num_frames_in_chunk),  # Also limit frames
                     "-c:v", "libx264",
                     "-preset", "medium",
                     "-crf", "18",
-                    "-c:a", "aac",
-                    "-b:a", "192k",
+                    "-an",  # Skip audio for now
+                    "-avoid_negative_ts", "make_zero",
+                    "-fflags", "+genpts",  # Regenerate timestamps
+                    "-vsync", "cfr",  # Constant frame rate
+                    "-r", str(fps),
+                    "-movflags", "+faststart",
                     "-y",
                     chunk_output
                 ]
 
                 try:
-                    subprocess.run(cmd_extract, check=True, capture_output=True, text=True)
-                    print(f"  Chunk {chunk_idx}: {num_frames_in_chunk} frames (starting at {start_time:.3f}s)")
+                    result = subprocess.run(cmd_extract, check=True, capture_output=True, text=True)
+                    print(f"  Chunk {chunk_idx}: {num_frames_in_chunk} frames ({exact_duration:.6f}s)")
                 except subprocess.CalledProcessError as e:
                     raise RuntimeError(f"Failed to extract chunk {chunk_idx}: {e.stderr}")
 
