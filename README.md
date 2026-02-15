@@ -80,7 +80,43 @@ Load videos from a directory in incremental mode, automatically tracking which v
 - Counter resets automatically if path or pattern changes
 - State persists across ComfyUI restarts
 
-### 3. Int to String
+### 3. Check Video Processed
+
+Check if a video has already been chunked to avoid re-processing.
+
+**Features:**
+- Checks if video has been processed before
+- Returns existing chunk directory if found
+- Prevents duplicate processing
+- Uses video hash for identification
+- Persistent tracking across sessions
+
+**How It Works:**
+1. Calculates SHA256 hash of input video
+2. Checks processed videos database
+3. Verifies chunk directory and files actually exist
+4. If chunks are missing, removes stale entry and returns not processed
+5. Returns chunk directory if found and valid
+6. Returns empty string if not processed or chunks deleted
+
+**Inputs:**
+- `video`: Video to check
+
+**Outputs:**
+- `chunk_dir_path`: Path to existing chunks (empty if not processed or deleted)
+- `is_processed`: Boolean indicating if video was already processed AND chunks exist
+
+**Use Cases:**
+- Skip re-processing videos that are already chunked
+- Resume interrupted batch processing
+- Avoid wasting time on duplicate work
+
+**Database:**
+- Stored in: `{ComfyUI_output_dir}/processed_videos.json`
+- Format: `{"video_hash": "/path/to/chunks"}`
+- Automatically updated by Video Chunker
+
+### 4. Int to String
 
 Simple utility node that converts an integer to a string.
 
@@ -128,19 +164,35 @@ LoadVideoBatch → VideoChunker
 1. LoadVideoBatch loads videos one by one from a directory
 2. VideoChunker splits each video into 77-frame chunks (preserving original FPS)
 3. Each execution processes the next video automatically
+4. Processed videos are tracked to avoid re-processing
 
-### Example 2: Batch process with custom chunk size
+### Example 2: Skip already processed videos
+
+```
+LoadVideoBatch → CheckVideoProcessed → (conditional) → VideoChunker
+```
+
+1. LoadVideoBatch loads next video
+2. CheckVideoProcessed checks if already chunked
+3. If is_processed = true, use existing chunk_dir_path
+4. If is_processed = false, send to VideoChunker
+5. Saves time by skipping duplicate work
+
+### Example 3: Batch process with custom chunk size
 
 ```
 LoadVideoBatch (path="/videos", pattern="*.mp4", label="MyBatch")
   ↓
+CheckVideoProcessed
+  ↓ (if not processed)
 VideoChunker (frames_per_chunk=60)
 ```
 
 This will:
 - Load videos from `/videos` directory (only .mp4 files)
-- Track progress with label "MyBatch"
-- Split each video into 60-frame chunks (preserving original FPS and quality)
+- Check if each video is already processed
+- Skip already chunked videos
+- Split new videos into 60-frame chunks (preserving original FPS and quality)
 - Automatically move to next video on each run
 
 ## Video Chunker Details

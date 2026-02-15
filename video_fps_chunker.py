@@ -10,6 +10,10 @@ from comfy_api.latest import ComfyExtension, io, Input
 import folder_paths
 
 
+# Import processed videos database
+from .check_video_processed import PROCESSED_DB
+
+
 class VideoFPSChunker(io.ComfyNode):
     """
     Splits video into configurable frame chunks saved as separate MP4 files.
@@ -147,17 +151,39 @@ class VideoFPSChunker(io.ComfyNode):
             # Calculate video hash
             video_hash = cls.calculate_video_hash(video_path)
 
+            # Create output directory structure
+            output_base = folder_paths.get_output_directory()
+            chunk_base_dir = os.path.join(output_base, output_dir, video_hash)
+
+            # Check if video was already processed AND chunks still exist
+            if PROCESSED_DB.is_processed(video_hash):
+                existing_chunk_dir = PROCESSED_DB.get_chunk_dir(video_hash)
+
+                # Verify chunks actually exist
+                if os.path.exists(existing_chunk_dir) and os.path.isdir(existing_chunk_dir):
+                    existing_chunks = sorted([f for f in os.listdir(existing_chunk_dir) if f.endswith('.mp4')])
+                    if len(existing_chunks) > 0:
+                        print(f"Video already processed, using existing chunks: {existing_chunk_dir} ({len(existing_chunks)} chunks)")
+                        return io.NodeOutput(os.path.realpath(existing_chunk_dir), len(existing_chunks))
+                    else:
+                        print(f"Chunks directory exists but empty, re-processing: {existing_chunk_dir}")
+                else:
+                    print(f"Chunks were deleted, re-processing video (hash: {video_hash})")
+
+                # Chunks don't exist - remove stale entry and continue processing
+                if video_hash in PROCESSED_DB.data:
+                    del PROCESSED_DB.data[video_hash]
+                    PROCESSED_DB.save()
+
+            # Continue with normal processing
+            os.makedirs(chunk_base_dir, exist_ok=True)
+
             # Get total frame count and FPS
             try:
                 total_frames = cls.get_video_frame_count(ffmpeg_path, video_path)
                 fps = cls.get_video_fps(ffmpeg_path, video_path)
             except subprocess.CalledProcessError as e:
                 raise RuntimeError(f"Failed to get video info: {e.stderr}")
-
-            # Create output directory structure
-            output_base = folder_paths.get_output_directory()
-            chunk_base_dir = os.path.join(output_base, output_dir, video_hash)
-            os.makedirs(chunk_base_dir, exist_ok=True)
 
             # Calculate number of chunks
             num_chunks = (total_frames + frames_per_chunk - 1) // frames_per_chunk
@@ -200,6 +226,9 @@ class VideoFPSChunker(io.ComfyNode):
 
             # Return absolute path to chunk directory and total chunks
             chunk_dir_realpath = os.path.realpath(chunk_base_dir)
+
+            # Mark video as processed in database
+            PROCESSED_DB.mark_processed(video_hash, chunk_dir_realpath)
 
             print(f"Video processed successfully: {len(chunks)} chunks created in {chunk_dir_realpath}")
 
