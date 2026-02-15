@@ -12,17 +12,17 @@ import folder_paths
 
 class VideoFPSChunker(io.ComfyNode):
     """
-    Reduces video FPS to 16 by stretching duration (no frame loss),
-    then splits into configurable frame chunks saved as separate MP4 files.
+    Splits video into configurable frame chunks saved as separate MP4 files.
+    Preserves original FPS and frames.
     """
 
     @classmethod
     def define_schema(cls):
         return io.Schema(
             node_id="VideoFPSChunker",
-            display_name="Video FPS Chunker",
+            display_name="Video Chunker",
             category="video/processing",
-            description="Reduce FPS to 16 (stretch duration) and split into chunks",
+            description="Split video into frame chunks (preserves original FPS)",
             inputs=[
                 io.Video.Input("video", tooltip="The video to process"),
                 io.String.Input(
@@ -41,6 +41,7 @@ class VideoFPSChunker(io.ComfyNode):
             ],
             outputs=[
                 io.String.Output(display_name="chunk_dir_path"),
+                io.Int.Output(display_name="total_chunks"),
             ],
         )
 
@@ -70,6 +71,24 @@ class VideoFPSChunker(io.ComfyNode):
             for byte_block in iter(lambda: f.read(4096), b""):
                 sha256_hash.update(byte_block)
         return sha256_hash.hexdigest()[:16]  # Use first 16 chars for shorter names
+
+    @classmethod
+    def get_video_frame_count(cls, ffmpeg_path: str, video_path: str) -> int:
+        """Get total frame count using ffprobe"""
+        ffprobe_path = ffmpeg_path.replace("ffmpeg", "ffprobe")
+
+        cmd = [
+            ffprobe_path,
+            "-v", "error",
+            "-count_frames",
+            "-select_streams", "v:0",
+            "-show_entries", "stream=nb_read_frames",
+            "-of", "default=nokey=1:noprint_wrappers=1",
+            video_path
+        ]
+
+        result = subprocess.run(cmd, capture_output=True, text=True, check=True)
+        return int(result.stdout.strip())
 
     @classmethod
     def get_video_fps(cls, ffmpeg_path: str, video_path: str) -> float:
@@ -128,79 +147,63 @@ class VideoFPSChunker(io.ComfyNode):
             # Calculate video hash
             video_hash = cls.calculate_video_hash(video_path)
 
-            # Get original FPS
+            # Get total frame count and FPS
             try:
-                original_fps = cls.get_video_fps(ffmpeg_path, video_path)
+                total_frames = cls.get_video_frame_count(ffmpeg_path, video_path)
+                fps = cls.get_video_fps(ffmpeg_path, video_path)
             except subprocess.CalledProcessError as e:
-                raise RuntimeError(f"Failed to get video FPS: {e.stderr}")
-
-            if original_fps <= 0:
-                raise ValueError(f"Invalid FPS detected: {original_fps}")
-
-            # Calculate PTS multiplier to stretch duration
-            target_fps = 16
-            pts_multiplier = original_fps / target_fps
+                raise RuntimeError(f"Failed to get video info: {e.stderr}")
 
             # Create output directory structure
             output_base = folder_paths.get_output_directory()
             chunk_base_dir = os.path.join(output_base, output_dir, video_hash)
             os.makedirs(chunk_base_dir, exist_ok=True)
 
-            # Step 1: Convert to 16 FPS by stretching duration
-            temp_stretched = os.path.join(chunk_base_dir, "_temp_stretched.mp4")
+            # Calculate number of chunks
+            num_chunks = (total_frames + frames_per_chunk - 1) // frames_per_chunk
 
-            cmd_stretch = [
-                ffmpeg_path,
-                "-i", video_path,
-                "-vf", f"setpts={pts_multiplier}*PTS",
-                "-r", "16",
-                "-c:v", "libx264",
-                "-preset", "medium",
-                "-crf", "23",
-                "-an",  # Remove audio
-                "-y",
-                temp_stretched
-            ]
+            print(f"Processing video: {total_frames} frames @ {fps:.2f} FPS -> {num_chunks} chunks of {frames_per_chunk} frames")
 
-            try:
-                result = subprocess.run(cmd_stretch, check=True, capture_output=True, text=True)
-            except subprocess.CalledProcessError as e:
-                raise RuntimeError(f"Failed to stretch video to 16 FPS: {e.stderr}")
+            # Extract each chunk with time-based seeking and frame limiting
+            for chunk_idx in range(num_chunks):
+                start_frame = chunk_idx * frames_per_chunk
+                num_frames_in_chunk = min(frames_per_chunk, total_frames - start_frame)
+                start_time = start_frame / fps
 
-            # Step 2: Split into chunks using segment muxer
-            chunk_pattern = os.path.join(chunk_base_dir, "%d.mp4")
+                chunk_output = os.path.join(chunk_base_dir, f"{chunk_idx}.mp4")
 
-            cmd_chunk = [
-                ffmpeg_path,
-                "-i", temp_stretched,
-                "-c:v", "copy",  # Copy codec for speed
-                "-f", "segment",
-                "-segment_frames", str(frames_per_chunk),
-                "-reset_timestamps", "1",
-                "-y",
-                chunk_pattern
-            ]
+                # Use time-based seeking with frame limiting for proper duration metadata
+                cmd_extract = [
+                    ffmpeg_path,
+                    "-ss", str(start_time),  # Seek to start time
+                    "-i", video_path,
+                    "-frames:v", str(num_frames_in_chunk),  # Extract exact number of frames
+                    "-c:v", "libx264",
+                    "-preset", "medium",
+                    "-crf", "18",
+                    "-c:a", "aac",
+                    "-b:a", "192k",
+                    "-y",
+                    chunk_output
+                ]
 
-            try:
-                result = subprocess.run(cmd_chunk, check=True, capture_output=True, text=True)
-            except subprocess.CalledProcessError as e:
-                raise RuntimeError(f"Failed to split video into chunks: {e.stderr}")
-
-            # Clean up temporary stretched video
-            if os.path.exists(temp_stretched):
-                os.remove(temp_stretched)
+                try:
+                    subprocess.run(cmd_extract, check=True, capture_output=True, text=True)
+                    print(f"  Chunk {chunk_idx}: {num_frames_in_chunk} frames (starting at {start_time:.3f}s)")
+                except subprocess.CalledProcessError as e:
+                    raise RuntimeError(f"Failed to extract chunk {chunk_idx}: {e.stderr}")
 
             # Verify chunks were created
             chunks = sorted([f for f in os.listdir(chunk_base_dir) if f.endswith('.mp4')])
             if not chunks:
                 raise RuntimeError("No chunks were created. Video might be too short or invalid.")
 
-            # Return absolute path to chunk directory
+            # Return absolute path to chunk directory and total chunks
             chunk_dir_realpath = os.path.realpath(chunk_base_dir)
 
-            print(f"Video processed successfully: {len(chunks)} chunks ({frames_per_chunk} frames each) created in {chunk_dir_realpath}")
+            print(f"Video processed successfully: {len(chunks)} chunks created in {chunk_dir_realpath}")
 
-            return io.NodeOutput(chunk_dir_realpath)
+            return io.NodeOutput(chunk_dir_realpath, num_chunks)
 
         finally:
             # Clean up temporary video if created
@@ -209,9 +212,36 @@ class VideoFPSChunker(io.ComfyNode):
                 os.rmdir(os.path.dirname(temp_video_path))
 
 
+class IntToString(io.ComfyNode):
+    """
+    Converts an integer to a string.
+    Useful for connecting integer outputs to string inputs.
+    """
+
+    @classmethod
+    def define_schema(cls):
+        return io.Schema(
+            node_id="IntToString",
+            display_name="Int to String",
+            category="utils",
+            description="Convert integer to string",
+            inputs=[
+                io.Int.Input("value", tooltip="Integer value to convert"),
+            ],
+            outputs=[
+                io.String.Output(display_name="string"),
+            ],
+        )
+
+    @classmethod
+    def execute(cls, value: int) -> io.NodeOutput:
+        return io.NodeOutput(str(value))
+
+
 class VideoFPSChunkerExtension(ComfyExtension):
     @override
     async def get_node_list(self) -> list[type[io.ComfyNode]]:
         return [
             VideoFPSChunker,
+            IntToString,
         ]

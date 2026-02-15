@@ -1,19 +1,28 @@
 # Video Processing Nodes
 
-ComfyUI custom nodes for video processing, including FPS reduction/chunking and batch video loading.
+ComfyUI custom nodes for video processing, including video chunking and batch video loading.
 
 ## Nodes
 
-### 1. Video FPS Chunker
+### 1. Video Chunker
 
-Processes videos by reducing FPS to 16 (by stretching duration, not dropping frames) and splitting them into configurable frame chunks.
+Splits videos into exact frame chunks while preserving original FPS.
 
 **Features:**
-- Reduces video FPS to 16 by stretching duration (no frames are lost)
 - Splits video into chunks with configurable frame count (default: 77 frames)
-- Saves each chunk as a separate MP4 file
+- Guarantees exact frame count per chunk (except last chunk)
+- Preserves original FPS
+- Correct duration metadata (no frozen frames when playing)
+- High quality re-encoding (CRF 18 - visually lossless)
+- Preserves audio without re-encoding
 - Organizes chunks by video hash to avoid conflicts
 - Uses system ffmpeg or imageio-ffmpeg
+
+**How It Works:**
+1. Gets total frame count and FPS from input video
+2. Calculates number of chunks needed
+3. Extracts each chunk using time-based seeking with frame limiting
+4. Properly updates duration metadata for correct playback
 
 **Inputs:**
 - `video`: Video input to process
@@ -22,6 +31,7 @@ Processes videos by reducing FPS to 16 (by stretching duration, not dropping fra
 
 **Outputs:**
 - `chunk_dir_path`: Absolute path to the directory containing chunks
+- `total_chunks`: Total number of chunks created
 
 **Output Structure:**
 ```
@@ -70,6 +80,26 @@ Load videos from a directory in incremental mode, automatically tracking which v
 - Counter resets automatically if path or pattern changes
 - State persists across ComfyUI restarts
 
+### 3. Int to String
+
+Simple utility node that converts an integer to a string.
+
+**Features:**
+- Converts integer values to string format
+- Useful for connecting integer outputs to string inputs
+- Simple pass-through conversion
+
+**Inputs:**
+- `value`: Integer value to convert
+
+**Outputs:**
+- `string`: String representation of the integer
+
+**Use Cases:**
+- Connect `total_chunks` output from Video Chunker to string-based nodes
+- Convert frame counts, indices, chunk counts, or other numeric values to text
+- Build dynamic file paths or labels with numeric components
+
 ## Requirements
 
 - ffmpeg installed on system, OR
@@ -92,11 +122,11 @@ pip install imageio-ffmpeg
 ### Example 1: Process videos incrementally
 
 ```
-LoadVideoBatch → VideoFPSChunker
+LoadVideoBatch → VideoChunker
 ```
 
 1. LoadVideoBatch loads videos one by one from a directory
-2. VideoFPSChunker processes each video into 77-frame chunks at 16 FPS
+2. VideoChunker splits each video into 77-frame chunks (preserving original FPS)
 3. Each execution processes the next video automatically
 
 ### Example 2: Batch process with custom chunk size
@@ -104,37 +134,51 @@ LoadVideoBatch → VideoFPSChunker
 ```
 LoadVideoBatch (path="/videos", pattern="*.mp4", label="MyBatch")
   ↓
-VideoFPSChunker (frames_per_chunk=60)
+VideoChunker (frames_per_chunk=60)
 ```
 
 This will:
 - Load videos from `/videos` directory (only .mp4 files)
 - Track progress with label "MyBatch"
-- Split each video into 60-frame chunks at 16 FPS
+- Split each video into 60-frame chunks (preserving original FPS and quality)
 - Automatically move to next video on each run
 
-## Video FPS Chunker Details
+## Video Chunker Details
 
 **How It Works:**
-1. Calculates SHA256 hash of input video (first 16 chars used)
-2. Stretches video duration using `setpts` filter to achieve 16 FPS
-3. Re-encodes video with libx264 at 16 FPS
-4. Splits into chunks using ffmpeg segment muxer
-5. Returns realpath of the directory containing chunks
+1. Counts total frames in the input video using ffprobe
+2. Gets video FPS for accurate time-based seeking
+3. Calculates number of chunks needed
+4. Extracts each chunk using `-ss` (seek) and `-frames:v` (frame limit)
+5. Properly updates duration metadata for correct playback
+6. Returns chunk directory path and total frame count
+
+**Technical Details:**
+- Uses ffmpeg time-based seeking: `-ss <start_time>`
+- Frame limiting: `-frames:v <count>`
+- Re-encodes with libx264 CRF 18 (visually lossless quality)
+- Audio encoded with AAC at 192kbps
+- Preserves original FPS
+- Frame-accurate extraction guaranteed
+- Correct duration metadata (no frozen frames)
 
 **Example Output:**
 
-Input: 30 FPS video with 231 frames, frames_per_chunk=77
-- Duration is stretched from ~7.7s to ~14.4s
-- Output: 3 chunks (0.mp4, 1.mp4, 2.mp4)
-  - 0.mp4: frames 0-76 (4.8125s)
-  - 1.mp4: frames 77-153 (4.8125s)
-  - 2.mp4: frames 154-230 (4.8125s)
+Input: 524 frames video @ 30 FPS, frames_per_chunk=77
+- Output: 7 chunks
+  - 0.mp4: 77 frames (2.57s) ✓
+  - 1.mp4: 77 frames (2.57s) ✓
+  - 2.mp4: 77 frames (2.57s) ✓
+  - 3.mp4: 77 frames (2.57s) ✓
+  - 4.mp4: 77 frames (2.57s) ✓
+  - 5.mp4: 77 frames (2.57s) ✓
+  - 6.mp4: 62 frames (2.07s) ✓ (last chunk)
+- Total chunks output: 7
 
-Input: 24 FPS video with 240 frames, frames_per_chunk=60
-- Duration is stretched from ~10s to ~15s
-- Output: 4 chunks (0.mp4, 1.mp4, 2.mp4, 3.mp4)
-  - Each chunk: 60 frames (3.75s at 16 FPS)
+Input: 240 frames video @ 24 FPS, frames_per_chunk=60
+- Output: 4 chunks
+  - Each chunk: exactly 60 frames (2.5s at 24 FPS)
+- Total chunks output: 4
 
 ## Supported Video Formats
 
