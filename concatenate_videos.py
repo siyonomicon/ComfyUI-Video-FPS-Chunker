@@ -173,9 +173,7 @@ class ConcatenateVideosFromDirectory(io.ComfyNode):
             if os.path.exists(temp_concat_file.name):
                 os.unlink(temp_concat_file.name)
 
-        return io.NodeOutput(
-            output_path=output_path
-        )
+        return io.NodeOutput(output_path)
 
 
 class ConcatenateVideosExtension(ComfyExtension):
