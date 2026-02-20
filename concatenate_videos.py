@@ -40,6 +40,12 @@ class ConcatenateVideosFromDirectory(io.ComfyNode):
                     tooltip="Output prefix (supports subdirs: 'vace/vid' or just 'vid')"
                 ),
             ],
+            outputs=[
+                io.String.Output(
+                    "output_path",
+                    tooltip="Absolute path to the concatenated video file"
+                ),
+            ],
             is_output_node=True,
         )
 
@@ -167,7 +173,9 @@ class ConcatenateVideosFromDirectory(io.ComfyNode):
             if os.path.exists(temp_concat_file.name):
                 os.unlink(temp_concat_file.name)
 
-        return io.NodeOutput()
+        return io.NodeOutput(
+            output_path=output_path
+        )
 
 
 class ConcatenateVideosExtension(ComfyExtension):
