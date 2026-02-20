@@ -84,9 +84,8 @@ class ConcatenateVideosFromDirectory(io.ComfyNode):
 
     @classmethod
     def execute(cls, directory_path: str, glob_pattern: str, output_prefix: str) -> io.NodeOutput:
-        # Validate input directory
-        if not os.path.exists(directory_path):
-            raise ValueError(f"Directory does not exist: {directory_path}")
+        # Create input directory if it doesn't exist
+        os.makedirs(directory_path, exist_ok=True)
 
         if not os.path.isdir(directory_path):
             raise ValueError(f"Path is not a directory: {directory_path}")
